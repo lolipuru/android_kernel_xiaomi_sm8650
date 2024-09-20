@@ -20,6 +20,10 @@
 #include <linux/reboot.h>
 #include <linux/regmap.h>
 #include <linux/suspend.h>
+#include <linux/nmi.h>
+#include <linux/sched/debug.h>
+#include <linux/sched.h>
+#include <linux/printk.h>
 
 #define PON_REV2			0x01
 
@@ -57,6 +61,9 @@
 #define  PON_DBC_SHIFT_GEN1		6
 #define  PON_DBC_SHIFT_GEN2		14
 
+#define PMIC_PWRKEY_BARK_TRIGGER	1
+#define PMIC_PWRKEY_TRIGGER		2
+
 struct pm8941_data {
 	unsigned int	pull_up_bit;
 	unsigned int	status_bit;
@@ -85,9 +92,11 @@ struct pm8941_pwrkey {
 	u32 req_delay;
 	bool last_status;
 	bool pull_up;
-	bool log_kpd_event;
 	const struct pm8941_data *data;
 };
+
+RAW_NOTIFIER_HEAD(pwrkey_irq_notifier_list);
+EXPORT_SYMBOL_GPL(pwrkey_irq_notifier_list);
 
 static int pm8941_reboot_notify(struct notifier_block *nb,
 				unsigned long code, void *unused)
@@ -151,11 +160,86 @@ static int pm8941_reboot_notify(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 
+typedef int (*mi_display_pwrkey_callback)(int);
+mi_display_pwrkey_callback mi_display_pwrkey_cb = NULL;
+
+void mi_display_pwrkey_callback_set(mi_display_pwrkey_callback cb)
+{
+	mi_display_pwrkey_cb = cb;
+	printk(KERN_INFO "%s: func %pF is set.\n", __func__, cb);
+	return;
+}
+EXPORT_SYMBOL(mi_display_pwrkey_callback_set);
+
+void show_state_filter_single(unsigned long state_filter)
+{
+	struct task_struct *g, *p;
+
+#if BITS_PER_LONG == 32
+	printk(KERN_INFO
+		"  task 			   PC stack   pid father\n");
+#else
+	printk(KERN_INFO
+		"  task 					   PC stack   pid father\n");
+#endif
+	rcu_read_lock();
+	for_each_process_thread(g, p) {
+		/*
+		 * reset the NMI-timeout, listing all files on a slow
+		 * console might take a lot of time:
+		 * Also, reset softlockup watchdogs on all CPUs, because
+		 * another CPU might be blocked waiting for us to process
+		 * an IPI.
+		 */
+		touch_nmi_watchdog();
+		//touch_all_softlockup_watchdogs();
+		if (p->__state == state_filter)
+			sched_show_task(p);
+	}
+	rcu_read_unlock();
+}
+
 static irqreturn_t pm8941_pwrkey_irq(int irq, void *_data)
 {
 	struct pm8941_pwrkey *pwrkey = _data;
 	unsigned int sts;
 	int err;
+
+	if (!strcmp(pwrkey->data->name,"pmic_pwrkey_bark")){
+		err = regmap_read(pwrkey->regmap,
+			pwrkey->baseaddr + PON_RT_STS, &sts);
+		if (err)
+			return IRQ_HANDLED;
+		sts &= pwrkey->data->status_bit;
+		if (sts) {
+			if(mi_display_pwrkey_cb != NULL){
+				mi_display_pwrkey_cb(PMIC_PWRKEY_BARK_TRIGGER);
+			}
+			raw_notifier_call_chain(&pwrkey_irq_notifier_list, 0, NULL);
+		}
+		return IRQ_HANDLED;
+	}
+
+	if (!strcmp(pwrkey->data->name,"pmic_pwrkey_resin_bark")){
+		err = regmap_read(pwrkey->regmap,
+			pwrkey->baseaddr + PON_RT_STS, &sts);
+		if (err)
+			return IRQ_HANDLED;
+		sts &= pwrkey->data->status_bit;
+		if(sts){
+			int tmp_console = console_loglevel;
+			if(mi_display_pwrkey_cb != NULL){
+				mi_display_pwrkey_cb(PMIC_PWRKEY_BARK_TRIGGER);
+			}
+			pr_info("pwrkey_resin_bark_irq trigger, start D&R task info");
+			console_loglevel = 15;
+			pr_info("------ collect D&R-state processes info before long comb key ------\n");
+			show_state_filter_single(TASK_UNINTERRUPTIBLE);
+			show_state_filter_single(TASK_RUNNING);
+			pr_info("------ end collecting D&R-state processes info ------\n");
+			console_loglevel = tmp_console;
+		}
+	}
 
 	if (pwrkey->sw_debounce_time_us) {
 		if (ktime_before(ktime_get(), pwrkey->sw_debounce_end_time)) {
@@ -176,10 +260,6 @@ static irqreturn_t pm8941_pwrkey_irq(int irq, void *_data)
 		pwrkey->sw_debounce_end_time = ktime_add_us(ktime_get(),
 						pwrkey->sw_debounce_time_us);
 
-	if (pwrkey->log_kpd_event)
-		pr_info_ratelimited("PMIC input: KPDPWR status=0x%02x, KPDPWR_ON=%d\n",
-			sts, (sts & PON_KPDPWR_N_SET));
-
 	/*
 	 * Simulate a press event in case a release event occurred without a
 	 * corresponding press event.
@@ -192,6 +272,12 @@ static irqreturn_t pm8941_pwrkey_irq(int irq, void *_data)
 
 	input_report_key(pwrkey->input, pwrkey->code, sts);
 	input_sync(pwrkey->input);
+
+	if(pwrkey->code == KEY_POWER && !sts){
+		if(mi_display_pwrkey_cb != NULL){
+			mi_display_pwrkey_cb(PMIC_PWRKEY_TRIGGER);
+		}
+	}
 
 	return IRQ_HANDLED;
 }
@@ -351,7 +437,6 @@ static int pm8941_pwrkey_probe(struct platform_device *pdev)
 	struct device_node *regmap_node;
 	const __be32 *addr;
 	u32 req_delay;
-	unsigned int sts;
 	int error;
 
 	if (of_property_read_u32(pdev->dev.of_node, "debounce", &req_delay))
@@ -456,18 +541,6 @@ static int pm8941_pwrkey_probe(struct platform_device *pdev)
 	if (error)
 		return error;
 
-	pwrkey->log_kpd_event = of_property_read_bool(pdev->dev.of_node, "qcom,log-kpd-event");
-
-	if (pwrkey->log_kpd_event) {
-		error = regmap_read(pwrkey->regmap,
-				    pwrkey->baseaddr + PON_RT_STS, &sts);
-		if (error)
-			dev_err(&pdev->dev, "failed to read PON_RT_STS rc=%d\n", error);
-		else
-			pr_info("KPDPWR status at init=0x%02x, KPDPWR_ON=%d\n",
-				sts, (sts & PON_KPDPWR_N_SET));
-	}
-
 	error = devm_request_threaded_irq(&pdev->dev, pwrkey->irq,
 					  NULL, pm8941_pwrkey_irq,
 					  IRQF_ONESHOT,
@@ -548,11 +621,31 @@ static const struct pm8941_data pon_gen3_resin_data = {
 	.has_pon_pbs = true,
 };
 
+static const struct pm8941_data pon_gen3_pwrkey_resin_bark_data = {
+	.status_bit = PON_GEN3_KPDPWR_N_SET,
+	.name = "pmic_pwrkey_resin_bark",
+	.phys = "pmic_pwrkey_resin_bark/input0",
+	.supports_ps_hold_poff_config = false,
+	.supports_debounce_config = false,
+	.has_pon_pbs = true,
+};
+
+static const struct pm8941_data pon_gen3_pwrkey_bark_data = {
+	.status_bit = PON_GEN3_KPDPWR_N_SET,
+	.name = "pmic_pwrkey_bark",
+	.phys = "pmic_pwrkey_bark/input0",
+	.supports_ps_hold_poff_config = false,
+	.supports_debounce_config = false,
+	.has_pon_pbs = true,
+};
+
 static const struct of_device_id pm8941_pwr_key_id_table[] = {
 	{ .compatible = "qcom,pm8941-pwrkey", .data = &pwrkey_data },
 	{ .compatible = "qcom,pm8941-resin", .data = &resin_data },
 	{ .compatible = "qcom,pmk8350-pwrkey", .data = &pon_gen3_pwrkey_data },
 	{ .compatible = "qcom,pmk8350-resin", .data = &pon_gen3_resin_data },
+	{ .compatible = "qcom,pmk8350-pwrkey-resin-bark", .data = &pon_gen3_pwrkey_resin_bark_data},
+	{ .compatible = "qcom,pmk8350-pwrkey-bark", .data = &pon_gen3_pwrkey_bark_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, pm8941_pwr_key_id_table);
