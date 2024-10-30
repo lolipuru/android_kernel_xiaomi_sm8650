@@ -981,8 +981,6 @@ static ssize_t diag_pid_store(struct config_item *item, const char *page,
 		pr_warn("%s: diag_dload mem region not defined\n", __func__);
 		return 0;
 	}
-
-	return len;
 }
 
 CONFIGFS_ATTR(diag_, pid);
