@@ -49,7 +49,6 @@
 #include <linux/usb/composite.h>
 #include <linux/soc/qcom/wcd939x-i2c.h>
 #include <linux/usb/repeater.h>
-#include "../../misc/hwid/hwid.h"
 
 #include "core.h"
 #include "gadget.h"
@@ -6687,9 +6686,6 @@ static int dwc3_msm_host_notifier(struct notifier_block *nb,
 	struct dwc3_msm *mdwc = container_of(nb, struct dwc3_msm, host_nb);
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
 	struct usb_device *udev = ptr;
-	uint32_t platform_id;
-
-	platform_id = get_hw_version_platform();
 
 	if (event != USB_DEVICE_ADD && event != USB_DEVICE_REMOVE)
 		return NOTIFY_DONE;
@@ -6726,11 +6722,11 @@ static int dwc3_msm_host_notifier(struct notifier_block *nb,
 				dwc3_msm_host_ss_powerdown(mdwc);
 
 				if (mdwc->wcd_usbss) {
-					if (platform_id == HARDWARE_PROJECT_N11U) {
-						wcd_usbss_dpdm_switch_update(true,false);
-					} else {
-						wcd_usbss_dpdm_switch_update(true, udev->speed == USB_SPEED_HIGH);
-					}
+                #if defined(CONFIG_TARGET_PRODUCT_MANET)
+                    wcd_usbss_dpdm_switch_update(true, false);
+                #else
+                    wcd_usbss_dpdm_switch_update(true, udev->speed == USB_SPEED_HIGH);
+                #endif
 				}
 				dwc3_msm_update_interfaces(udev);
 			} else {
@@ -6862,7 +6858,6 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 {
 	int ret = 0;
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
-	uint32_t platform_id;
 	u32 reg;
 
 	if (on) {
@@ -6948,11 +6943,10 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 				DWC3_GUSB3PIPECTL_SUSPHY, 1);
 
 		 /* disable host gen2 */
-		platform_id = get_hw_version_platform();
-		if ( (platform_id == HARDWARE_PROJECT_N3) || (platform_id == HARDWARE_PROJECT_N18) ) {
-			dwc3_msm_write_reg_field(mdwc->base, USB3_PRI_LINK_REGS_LLUCTL(0), FORCE_GEN1_MASK, 1);
-			dev_info(mdwc->dev, "Turn on host: Force gen1");
-		}
+	#if defined(CONFIG_TARGET_PRODUCT_HOUJI) || defined(CONFIG_TARGET_PRODUCT_GOKU)
+		dwc3_msm_write_reg_field(mdwc->base, USB3_PRI_LINK_REGS_LLUCTL(0), FORCE_GEN1_MASK, 1);
+		dev_info(mdwc->dev, "Turn on host: Force gen1");
+	#endif
 		/* Reduce the U3 exit handshake timer from 8us to approximately
 		 * 300ns to avoid lfps handshake interoperability issues
 		 */
