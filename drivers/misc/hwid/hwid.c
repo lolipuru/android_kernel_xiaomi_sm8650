@@ -19,15 +19,16 @@
 #define HW_COUNTRY_VERSION_MASK     0xFFF00000
 #define HW_BUILD_VERSION_MASK       0x000F0000
 
-char *SOC_207_PRODUCTS[] = {
-	"houji",
-	"shennong",
+char *SOC_22D_PRODUCTS[] = {
 	"aurora",
-	"manet",
 	"goku",
-	"ryui",
+	"houji",
+	"manet",
+	"ruyi",
+	"shennong",
+	"zorn"
 };
-int SOC_207_PRODUCT_CNT = sizeof(SOC_207_PRODUCTS) / sizeof(char*);
+int SOC_22D_PRODUCT_CNT = sizeof(SOC_22D_PRODUCTS) / sizeof(char*);
 
 static uint project;
 module_param(project, uint, 0444);
@@ -78,11 +79,19 @@ char* product_name_get(void) {
 	int index = 0;
 
 	switch(soc_id) {
-		case 0x207: // SM8650
-			product_array = SOC_207_PRODUCTS;
-			product_count = SOC_207_PRODUCT_CNT;
+		case 0x22D: // SM8650
+			product_array = SOC_22D_PRODUCTS;
+			product_count = SOC_22D_PRODUCT_CNT;
 			index = project - 1;
 			break;
+	    case 0x266: // SM8635
+	        if (project == 9)
+	            return "chenfeng";
+	        else if (project == 8)
+	            return "peridot";
+			else if (project == 7)
+				return "muyu";
+	        else goto unknown;
 		default:
 			goto unknown;
 	}
