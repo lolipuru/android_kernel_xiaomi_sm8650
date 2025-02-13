@@ -588,6 +588,7 @@ KBUILD_CFLAGS   := -Wall -Wundef -Werror=strict-prototypes -Wno-trigraphs \
 		   -Werror=implicit-function-declaration -Werror=implicit-int \
 		   -Werror=return-type -Wno-format-security \
 		   -Wno-error=format \
+		   -Wno-enum-compare \
 		   -std=gnu11
 KBUILD_CPPFLAGS := -D__KERNEL__
 KBUILD_RUSTFLAGS := $(rust_common_flags) \
@@ -1050,6 +1051,8 @@ KBUILD_CFLAGS += -Wvla
 
 # disable pointer signed / unsigned warnings in gcc 4.0
 KBUILD_CFLAGS += -Wno-pointer-sign
+
+KBUILD_CFLAGS += -Wno-format -Wno-enum-compare
 
 # In order to make sure new function cast mismatches are not introduced
 # in the kernel (to avoid tripping CFI checking), the kernel should be
