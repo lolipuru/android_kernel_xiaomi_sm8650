@@ -100,4 +100,3 @@ On entering state 1, dm_bow has a list of free sectors. All other sectors are
 unchanged. Sector0_current is selected from the free sectors and the contents of
 sector 0 are copied there. The sector 0 is backed up, which triggers the first
 log entry to be written.
-
